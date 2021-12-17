@@ -1,0 +1,83 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import networkx as nx
+import cvxpy as cv
+import decimal
+import time
+
+start = time.time()
+
+
+feeder = pd.read_excel('C:/Users/Usuario/OneDrive - Universidad Tecnológica de Pereira/Documents/Maestría/Proyecto/Benchmarks/Benchmark_work2.xlsx', sheet_name='Datos')
+Time = pd.read_excel('C:/Users/Usuario/OneDrive - Universidad Tecnológica de Pereira/Documents/Maestría/Proyecto/Benchmarks/Benchmark_work2.xlsx', sheet_name='Horas')
+
+G = nx.DiGraph()
+G.add_node(1,name='slack',d=0,p=50)
+
+
+for k in range(len(feeder)):
+  gkm = feeder['Rpu'][k]
+  dk = feeder['Ppu'][k]
+  G.add_node(feeder['To '][k],name=feeder['To '][k],d=dk,p=0)
+  G.add_edge(feeder['From '][k],feeder['To '][k],g=1/gkm)
+
+Variation=np.zeros(len(Time))
+PV=np.zeros(len(Time))
+for k in range(len(Time)):
+  Variation [k]=Time['Carga '][k]
+  PV [k]= Time['PV'][k]
+
+A=nx.incidence_matrix(G,oriented=True)
+Gp=np.diag([G.edges[k]['g'] for k in G.edges])
+Gbus=A@Gp@A.T
+error=1e-6
+pgdmax=1
+pgdmin=0
+
+n=G.number_of_nodes()
+GN0=Gbus[1:n,0]
+GNN=Gbus[1:n,1:n]
+d=np.array([G.nodes[k]['d'] for k in G.nodes])
+pmax=np.array([G.nodes[k]['p'] for k in G.nodes])
+y=cv.Variable(n) 
+x=cv.Variable(n,boolean=True)
+max_gd=3
+
+W={}
+for i in range(len(Variation)):
+  W[i]=cv.Variable((n,n))
+
+p=cv.Variable((n,len(Time)))
+pgd=cv.Variable((n,len(Time)))
+func=0
+res=[]
+
+for i in range(len(Time)):
+  M=Gbus@W[i]
+  res+=[W[i][0,0]==1]
+  for k in range(n):
+    res +=[p[k,i]+pgd[k,i]-d[k]*Variation[i]==M[k,k]]
+    res +=[p[k,i]<=pmax[k]]
+    res +=[p[k,i]>=0]
+    # res +=[y(k)<=x(k)*pgdmax]
+    res+=[pgd[k,i] >= pgdmin]
+    res+=[pgd[k,i] <= y[k]*PV[i]]
+    #res +=[W[i][k][k]>=0.9025]
+    #res +=[W[i][k][k]<=1.1025]
+    for m in range (n):
+        res +=[W[i][m,k]==W[i][k,m]]
+        res +=[cv.SOC(W[i][k][k]+W[i][m][m],cv.vstack([2*W[i][k,m],W[i][k][k]-W[i][m][m]]))]
+        func+=Gbus[k,m]*W[i][m,k]
+sfd=0
+for k in range(n):
+  res +=[y[k]<=x[k]*pgdmax] 
+  sfd+=x[k]
+res+=[sfd<=max_gd]  
+
+obj=cv.Minimize(func)
+OPFSOC=cv.Problem(obj,res)
+OPFSOC.solve(solver=cv.MOSEK, verbose=True)
+print(obj.value)
+end = time.time()
+print("time", end - start)
