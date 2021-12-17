@@ -1,0 +1,92 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import networkx as nx
+import cvxpy as cv
+import decimal
+
+feeder = pd.read_excel('C:/Users/Usuario/OneDrive - Universidad Tecnológica de Pereira/Documents/Maestría/Proyecto/Benchmarks/Benchmark_work2.xlsx', sheet_name='Datos')
+Time = pd.read_excel('C:/Users/Usuario/OneDrive - Universidad Tecnológica de Pereira/Documents/Maestría/Proyecto/Benchmarks/Benchmark_work2.xlsx', sheet_name='Horas')
+batteries = pd.read_excel('C:/Users/Usuario/OneDrive - Universidad Tecnológica de Pereira/Documents/Maestría/Proyecto/Benchmarks/Benchmark_work2.xlsx', sheet_name='Baterías')
+
+G = nx.DiGraph()
+G.add_node(1,name='slack',d=0,p=50,pgd=0,pmax=0,pmin=0)
+
+
+for k in range(len(feeder)):
+  gkm = feeder['Rpu'][k]
+  dk = feeder['Ppu'][k]
+  G.add_node(feeder['To '][k],name=feeder['To '][k],d=dk,p=0,pgd=0,pmax=0,pmin=0)
+  G.add_edge(feeder['From '][k],feeder['To '][k],g=1/gkm)
+
+Variation=np.zeros(len(Time))
+PV=np.zeros(len(Time))
+for k in range(len(Time)):
+  Variation [k]=Time['Carga '][k]
+  PV [k]= Time['PV'][k]
+
+A=nx.incidence_matrix(G,oriented=True)
+Gp=np.diag([G.edges[k]['g'] for k in G.edges])
+Gbus=A@Gp@A.T
+error=1e-6
+pgdmax=5
+
+n=G.number_of_nodes()
+GN0=Gbus[1:n,0]
+GNN=Gbus[1:n,1:n]
+d=np.array([G.nodes[k]['d'] for k in G.nodes])
+pmax=np.array([G.nodes[k]['p'] for k in G.nodes])
+pgd=np.array([G.nodes[k]['pgd'] for k in G.nodes])
+pmaxb=np.array([G.nodes[k]['pmax'] for k in G.nodes])
+pminb=np.array([G.nodes[k]['pmin'] for k in G.nodes])
+
+pmaxb[8]=4
+pminb[8]=-3.2
+
+Phi=0.0625
+
+pgd[11]=1
+pgd[16]=1
+pgd[18]=1
+
+W={}
+for i in range(len(Variation)):
+  W[i]=cv.Variable((n,n))
+
+
+p=cv.Variable((n,len(Time)))
+pg=cv.Variable((n,len(Time)))
+pb=cv.Variable((n,len(Time)))
+SoC=cv.Variable((n,len(Time)))
+
+func=0
+res=[]
+res+=[SoC[:,0]==0.5]
+res+=[SoC[:,len(Time)-1]==0.5]
+
+for i in range(len(Time)):
+  M=Gbus@W[i]
+  res+=[W[i][0,0]==1]
+  for k in range(n):
+    res +=[p[k,i]+pg[k,i]+pb[k,i]-d[k]*Variation[i]==M[k,k]]
+    res +=[p[k,i]<=pmax[k]]
+    res +=[p[k,i]>=0]
+    res +=[pg[k,i]<=pgd[k]*PV[i]]
+    res +=[pg[k,i]>=0] 
+    res +=[pb[k][i]<=pmaxb[k]]
+    res +=[pb[k][i]>=pminb[k]]
+    res +=[SoC[k,i]==SoC[k,i-1]-Phi*pb[k,i]]
+    res +=[SoC[k,i]<=1]
+    res +=[SoC[k,i]>=0]
+    ##Pensar en el por qué no converge adecuadamente con restricción anterior
+    # res +=[W[i][k][k]>=0.9025]
+    # res +=[W[i][k][k]<=1.1025]
+    for m in range (n):
+        res +=[W[i][m,k]==W[i][k,m]]
+        res +=[cv.SOC(W[i][k][k]+W[i][m][m],cv.vstack([2*W[i][k,m],W[i][k][k]-W[i][m][m]]))]
+        func+=Gbus[k,m]*W[i][m,k]
+
+obj=cv.Minimize(func)
+OPFSOC=cv.Problem(obj,res)
+OPFSOC.solve(solver=cv.MOSEK,verbose=True)
+print(obj.value)
